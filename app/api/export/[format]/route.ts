@@ -76,9 +76,11 @@ export async function GET(_req: Request, ctx: { params: Promise<{ format: string
     );
   }
 
-  const { snapshot } = await loadSnapshot();
-
   try {
+    // Inside the try on purpose: if loadSnapshot throws (seed unreadable, a Blob read that
+    // slips past its own guard), the error must become a JSON 500 — not escape the handler
+    // and let the platform render an HTML error page, which a JSON/download client can't use.
+    const { snapshot } = await loadSnapshot();
     const body = await spec.render(snapshot);
     // A Node Buffer isn't a DOM BodyInit; a Uint8Array view over it is. Strings pass through.
     const responseBody: BodyInit = typeof body === 'string' ? body : new Uint8Array(body);
