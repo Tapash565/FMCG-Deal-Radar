@@ -38,16 +38,15 @@ async function loadFromBlob(): Promise<Snapshot | null> {
   if (!hasBlobToken()) return null;
 
   try {
-    const { list } = await import('@vercel/blob');
-    const { blobs } = await list({ prefix: SNAPSHOT_BLOB_PATH, limit: 1 });
-    const blob = blobs[0];
-    if (!blob) return null; // no refresh has run yet
-
-    // no-store: the pathname is stable across refreshes, so a cached read would serve a
-    // stale snapshot after the cron writes a new one.
-    const res = await fetch(blob.url, { cache: 'no-store' });
-    if (!res.ok) return null;
-    return (await res.json()) as Snapshot;
+    const { get } = await import('@vercel/blob');
+    // The store is private, so the blob's URL isn't publicly fetchable — get() reads it by
+    // its fixed pathname and authenticates server-side with BLOB_READ_WRITE_TOKEN. This is
+    // only ever called during a server render / API route, never from the browser.
+    // useCache: false bypasses the CDN and reads from origin, so a fresh refresh is visible
+    // immediately — the pathname is stable across refreshes, so a cached read would be stale.
+    const result = await get(SNAPSHOT_BLOB_PATH, { access: 'private', useCache: false });
+    if (!result || result.statusCode !== 200) return null; // no refresh has run yet
+    return (await new Response(result.stream).json()) as Snapshot;
   } catch (err) {
     // A missing token, a cold store, or a network blip must degrade to the seed rather
     // than blank the demo — that fallback is the whole point of committing a seed.
@@ -59,9 +58,10 @@ async function loadFromBlob(): Promise<Snapshot | null> {
 /**
  * Persist a snapshot as the new live one. Overwrites the fixed path in place.
  *
- * cacheControlMaxAge is the floor (60s): the snapshot only changes on refresh, and a
- * short edge cache is fine, while loadFromBlob reads no-store so a fresh refresh is
- * visible to the server render immediately.
+ * access is 'private' to match the store's configuration: the snapshot is only ever read
+ * server-side (loadFromBlob), so it never needs a public URL. cacheControlMaxAge is the
+ * floor (60s): the snapshot only changes on refresh, and a short edge cache is fine, while
+ * loadFromBlob reads with useCache: false so a fresh refresh is visible immediately.
  */
 export async function saveSnapshot(snapshot: Snapshot): Promise<{ url: string }> {
   if (!hasBlobToken()) {
@@ -72,7 +72,7 @@ export async function saveSnapshot(snapshot: Snapshot): Promise<{ url: string }>
   }
   const { put } = await import('@vercel/blob');
   const { url } = await put(SNAPSHOT_BLOB_PATH, JSON.stringify(snapshot), {
-    access: 'public',
+    access: 'private',
     contentType: 'application/json',
     allowOverwrite: true,
     cacheControlMaxAge: 60,
