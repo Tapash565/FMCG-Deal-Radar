@@ -1,6 +1,7 @@
 import { loadSnapshot, relativeAge } from '@/lib/snapshot';
 import type { Funnel, Newsletter } from '@/lib/types';
 import { RefreshButton } from '@/components/RefreshButton';
+import { ExportBar } from '@/components/ExportBar';
 import { DealsTable } from '@/components/DealsTable';
 import { CATEGORY_BORDER, CATEGORY_DOT, CONFIDENCE_BADGE, MICRO_LABEL } from '@/components/categories';
 
@@ -203,6 +204,8 @@ export default async function Page() {
           <RefreshButton />
         </div>
       </header>
+
+      <ExportBar />
 
       <FunnelPanel funnel={funnel} />
 
