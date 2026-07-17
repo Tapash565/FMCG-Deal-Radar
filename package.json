@@ -8,9 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "check:providers": "tsx --env-file-if-exists=.env.local scripts/check-providers.ts",
-    "pipeline": "tsx --env-file-if-exists=.env.local scripts/run-pipeline.ts",
-    "calibrate:dedup": "tsx --env-file-if-exists=.env.local scripts/calibrate-dedup.ts"
+    "check:providers": "tsx --env-file-if-exists=.env.local src/scripts/check-providers.ts",
+    "pipeline": "tsx --env-file-if-exists=.env.local src/scripts/run-pipeline.ts",
+    "calibrate:dedup": "tsx --env-file-if-exists=.env.local src/scripts/calibrate-dedup.ts"
   },
   "dependencies": {
     "@vercel/blob": "^2.6.1",

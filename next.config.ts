@@ -1,30 +1,31 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // The export renderers use Node-native libraries that ship their own CJS builds and
-  // reach for Node built-ins (streams, zlib). Let them load via native require instead
-  // of being pulled through the bundler, which is where they tend to break.
-  serverExternalPackages: ['docx', 'exceljs', 'pptxgenjs'],
+  // docx and exceljs are Node-native OOXML libraries kept out of the bundle so they load from
+  // node_modules at runtime. Both resolve cleanly when externalized: docx is "type":"module"
+  // with a valid .mjs `import` entry, and exceljs is plain CommonJS (its package `main` is the
+  // require target). pptxgenjs is deliberately NOT in this list — see the note below.
+  serverExternalPackages: ['docx', 'exceljs'],
 
-  // Two categories of files the serverless file tracer misses, forced into every server trace:
-  //
-  //  1. data/snapshot.json — loadSeed() reads it at runtime via a dynamic process.cwd() path
-  //     the tracer can't follow, so on Vercel the seed fallback would ENOENT and blank the demo.
-  //
-  //  2. The CommonJS builds of the externalized OOXML libraries. Because these are in
-  //     serverExternalPackages they load via native require() at runtime, which resolves the
-  //     packages' `require` export condition — docx/dist/index.cjs and pptxgenjs/dist/pptxgen.cjs.js.
-  //     But the tracer follows the `import` condition and only ships the .mjs builds, so on Vercel
-  //     the CJS entry each package's require() actually targets is absent. The route imports both
-  //     libs at module top, so the whole export function fails to initialize — every format 500s
-  //     with a platform HTML page (before the handler's try/catch). Local dev has the full
-  //     node_modules, so it only reproduces in production. (exceljs' main IS its require target,
-  //     so it traces correctly and needs no help; jszip, the one shared runtime dep, is traced too.)
+  // Why pptxgenjs must be BUNDLED, not externalized:
+  // Next/Turbopack loads a serverExternalPackages entry at runtime via ESM import(), which
+  // resolves the package's `import` export condition. pptxgenjs@4 maps that to
+  // dist/pptxgen.es.js — a file full of `import`/`export` statements in a package that is NOT
+  // "type":"module" — so on Vercel Node throws "Cannot use import statement outside a module"
+  // and the whole export route fails to initialize. Because route.ts imports every renderer at
+  // module top, that one bad load 500s all five formats (docx, pptx, xlsx, csv, json). Leaving
+  // pptxgenjs in the default bundle lets Turbopack transpile its ESM build at build time, so the
+  // broken runtime-resolution path never runs. (Local dev/`next start` use the full node_modules
+  // and a different module path, which is why this only ever reproduced in production.)
+
+  // Files the serverless file tracer misses, forced into every server trace:
+  //  - data/snapshot.json: loadSeed() reads it at runtime via a dynamic process.cwd() path the
+  //    tracer can't follow, so on Vercel the seed fallback would ENOENT and blank the demo.
+  //  - docx/dist: insurance for the externalized docx build's runtime files.
   outputFileTracingIncludes: {
     '/*': [
       './data/snapshot.json',
       './node_modules/docx/dist/**/*',
-      './node_modules/pptxgenjs/dist/**/*',
     ],
   },
 };
