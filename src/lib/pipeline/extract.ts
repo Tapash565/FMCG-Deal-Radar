@@ -9,6 +9,7 @@
 
 import { chatJSON, mapLimit, MODEL_FAST } from '../groq';
 import type { Article, Category, Deal, DealType, RelevanceVerdict } from '../types';
+import { namesAnEntity } from './tokens';
 
 const CONCURRENCY = 2;
 
@@ -133,26 +134,6 @@ export async function extractDeal(
 type PartialDeal = Omit<Deal, 'credibilityScore' | 'corroboratingSources' | 'confidence'>;
 
 /**
- * Words that describe a company without naming one. A target built only from these is
- * a paraphrase of the headline, not an entity.
- */
-const GENERIC_TOKENS = new Set([
-  // generic nouns
-  'company', 'companies', 'firm', 'firms', 'startup', 'startups', 'brand', 'brands',
-  'business', 'businesses', 'major', 'majors', 'group', 'maker', 'makers', 'player',
-  'players', 'giant', 'giants', 'billionaire', 'entity', 'arm', 'unit', 'subsidiary',
-  'venture', 'chain', 'retailer', 'producer', 'manufacturer', 'conglomerate', 'parent',
-  'undisclosed', 'unnamed', 'unknown', 'anonymous', 'investor', 'investors', 'consortium',
-  // sector words — descriptive unless paired with a real name
-  'beverage', 'beverages', 'food', 'foods', 'cosmetics', 'care', 'personal', 'home',
-  'products', 'fmcg', 'consumer', 'goods', 'dairy', 'snacks', 'beauty', 'skincare',
-  // qualifiers and nationalities
-  'the', 'a', 'an', 'of', 'and', 'in', 'global', 'local', 'leading', 'top', 'largest',
-  'biggest', 'indian', 'kenyan', 'german', 'american', 'british', 'french', 'chinese',
-  'japanese', 'european', 'us', 'uk', 'india', 'based', 'listed', 'private', 'public',
-]);
-
-/**
  * Structural gate: does this record name anything?
  *
  * A deal needs a named target — that IS the news. Two ways it fails, both observed:
@@ -164,10 +145,8 @@ const GENERIC_TOKENS = new Set([
  *      "Indian billionaire". These are worse than empty, because they read as real
  *      companies and would ship in a newsletter looking like fact.
  *
- * The test for (2): at least one token must be distinctive. "Varun Beverages" keeps
- * (varun), "Naturis Cosmetics" keeps (naturis), "Beverages Major" goes — every token
- * is a category word. This deliberately errs toward keeping: an unusual real name
- * always survives, since it can't be in a fixed generic list.
+ * The distinctive-token test that decides (2) lives in ./tokens as namesAnEntity, shared
+ * with the deal-identity merge so both stages agree on what counts as a name.
  *
  * Relevance rejects listing pages upstream, but this stays as a backstop — the checks
  * fail independently. Relevance judges the article; this judges the record. An
@@ -177,16 +156,6 @@ const GENERIC_TOKENS = new Set([
  * Only a TARGET is required, not a value. Undisclosed terms are normal and newsworthy;
  * an unnamed target is neither.
  */
-export function namesAnEntity(s: string): boolean {
-  const tokens = s
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(Boolean);
-  if (tokens.length === 0) return false;
-  return tokens.some((t) => !GENERIC_TOKENS.has(t));
-}
-
 export function isPublishable(d: PartialDeal): boolean {
   return d.target !== 'Undisclosed' && d.target.length > 1 && namesAnEntity(d.target);
 }

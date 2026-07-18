@@ -7,7 +7,7 @@
  */
 
 import { chatJSON, mapLimit, MODEL_FAST } from '../groq';
-import { DEAL_VERB_PATTERN, FMCG_SIGNAL_PATTERN } from '../sources';
+import { DEAL_VERB_PATTERN, FMCG_SIGNAL_PATTERN, NON_DEAL_NOISE_PATTERN } from '../sources';
 import type { Article, DealType, RelevanceVerdict } from '../types';
 
 /**
@@ -56,6 +56,11 @@ const CONCURRENCY = 2;
  */
 export function passesPreFilter(a: Article): boolean {
   const haystack = `${a.title} ${a.snippet}`;
+  // The noise reject runs FIRST and is absolute: a 13F holdings post or a home-health
+  // acquisition can carry both a deal-verb and an FMCG-signal, so recall alone would wave
+  // it through. NON_DEAL_NOISE_PATTERN is calibrated to never match a real deal, so
+  // dropping on it here costs no recall and saves the LLM call. See sources.ts.
+  if (NON_DEAL_NOISE_PATTERN.test(haystack)) return false;
   return DEAL_VERB_PATTERN.test(haystack) && FMCG_SIGNAL_PATTERN.test(haystack);
 }
 
@@ -73,12 +78,16 @@ export function passesPreFilter(a: Article): boolean {
  */
 const BATCH_SYSTEM = `Decide if each headline reports a specific FMCG deal (M&A, funding round, stake purchase, or JV).
 
-FMCG = packaged food, beverage, personal care, home care.
+FMCG = packaged food, beverage, personal care, home care. "Home care" means cleaning /
+laundry / air-care PRODUCTS — NOT in-home health, elder, hospice or caregiving SERVICES.
 
 d=1 only if BOTH: it reports one specific transaction, AND the target is an FMCG business.
 d=0 for: other sectors (IT, hotels, real estate, pharma, retail chains) even under an FMCG
-parent name (ITC Hotels, ITC Infotech are NOT FMCG); earnings reports; listing/index pages
-("List of 12 Acquisitions by X"); fund portfolio changes; product launches; commentary.
+parent name (ITC Hotels, ITC Infotech are NOT FMCG); home-health / hospice / senior-care
+providers (a "home care" or "home health" services company is healthcare, not FMCG);
+institutional or fund share-position changes ("X Capital buys 42,000 shares of Y", "stake
+boosted by", 13F holdings, analyst price targets); earnings reports; listing/index pages
+("List of 12 Acquisitions by X"); product launches; commentary.
 
 When genuinely unsure, use d=1 — a later pass re-checks survivors, but nothing recovers
 something dropped here.
@@ -91,7 +100,9 @@ FMCG means fast-moving consumer packaged goods:
 - Food (snacks, dairy, staples, confectionery, packaged foods)
 - Beverage (soft drinks, juices, tea/coffee, alcohol, water)
 - Personal care (skincare, haircare, cosmetics, oral care, hygiene)
-- Home care (detergents, cleaners, air care)
+- Home care (detergents, cleaners, air care) — the PRODUCTS. NOT in-home health,
+  elder, hospice, or caregiving SERVICES: a company called "... Home Care" that provides
+  nursing or assisted living is HEALTHCARE, not FMCG, however much it says "acquisition".
 
 A DEAL is one of: M&A (acquisition/merger), Funding (VC/PE investment round), Stake (buying or selling an equity stake), JV (joint venture).
 
@@ -109,7 +120,10 @@ Return FALSE for:
 - Deals in other sectors, even by a company with an FMCG parent or a similar name
   (e.g. ITC Hotels = hospitality; ITC Infotech = IT services; both are NOT FMCG)
 - IT services, hotels, real estate, pharma, financial services, retail chains, logistics
+- Home-health, hospice, senior-care or in-home caregiving providers (healthcare services,
+  even when the company name contains "Home Care" and the article says "acquisition")
 - Mutual fund or institutional investors changing portfolio positions in a stock
+  (13F holdings, "X buys N shares of Y", "stake boosted/trimmed by", analyst price targets)
 - Product launches, marketing campaigns, executive appointments, stock price commentary
 - Vague market/sector commentary with no specific transaction
 

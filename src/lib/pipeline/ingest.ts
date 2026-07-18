@@ -7,7 +7,7 @@
 
 import Parser from 'rss-parser';
 import { createHash } from 'node:crypto';
-import { DIRECT_FEEDS, buildQueries, type FeedSource } from '../sources';
+import { DIRECT_FEEDS, buildQueries, isBlockedSource, type FeedSource } from '../sources';
 import { WINDOW_DAYS } from '../config';
 import type { Article } from '../types';
 
@@ -80,6 +80,11 @@ async function fetchFeed(
     // Prefer the explicit <source> element; fall back to the title suffix, then the
     // feed's own name (direct feeds carry neither).
     const source = readSource(item) ?? fromTitle ?? feed.name;
+
+    // Drop stock-data mills and wrong-sector trade press at the door — they never carry
+    // an FMCG deal, so embedding and classifying them is pure wasted budget. See
+    // sources.ts#BLOCKED_SOURCES.
+    if (isBlockedSource(source)) continue;
 
     out.push({
       id: articleId(item.link),

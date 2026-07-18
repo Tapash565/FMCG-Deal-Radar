@@ -105,6 +105,40 @@ advance, which you can't.
 **Cost:** a legitimate publisher not on the list is under-rated until someone adds it. That's
 a one-line fix in `lib/sources.ts` and the right direction to fail in.
 
+## A source blocklist for non-FMCG mills — which is not the same decision
+
+`lib/sources.ts` also carries a small `BLOCKED_SOURCES` set, dropped at ingest. This is not a
+reversal of the decision above. Tiering answers "how much do I trust a source that reported a
+deal?" — and there, unknown must mean T3, not blocked. The blocklist answers a different
+question: "does this publisher produce FMCG deal news *at all*?" Three kinds provably don't, and
+were measured polluting the funnel:
+
+- **Stock-data mills** (MarketBeat): algorithmic 13F-holdings and analyst-rating posts —
+  "First Horizon Corp Purchases 31,583 Shares of Colgate-Palmolive Company $CL". A share
+  position is not a transaction.
+- **Home-health / hospice press** (Hospice News, McKnights Home Care): real M&A, in *healthcare*,
+  matched because "home care" is an FMCG category word.
+- **Horse-racing / betting press** (At The Races, Betfair): "Britannia **Stakes**" at Royal Ascot
+  matched the watchlist entity *Britannia* and the *stake* verb.
+
+**Why it's safe where a general blocklist isn't:** these are named by *sector*, not by trust.
+The failure mode the allowlist decision guards against — silently under-rating a real publisher —
+can't happen here, because nothing on this list can carry an FMCG deal to under-rate. The
+content-level backstop (`NON_DEAL_NOISE_PATTERN`) is calibrated the same way: it flagged 32 of
+297 live articles, all noise, and zero real-deal headlines. When a pattern *could* match a real
+deal, it belongs to the LLM, not to a regex or a blocklist.
+
+## Deal-identity merge, after extraction (stage 5b)
+
+De-dup (stage 3) clusters on article-text similarity and is deliberately biased to under-merge
+(`COSINE_THRESHOLD = 0.80`). That's right for prose but leaves genuine duplicates when two
+outlets word the same deal differently — observed live as Naturis (Entrackr + Inc42) and
+Emami/Vedix showing twice. `merge.ts` adds a second pass on the *extracted* identity (acquirer,
+target, type, value, date), which is what the deal actually is, so it collapses those without
+touching the calibrated cosine threshold. It runs before credibility so the merged deal counts
+corroboration across every outlet. Same under-merge bias: when the acquirer is undisclosed and no
+value/stake corroborates identity, it shows both rather than risk fusing two real deals.
+
 ## Visible confidence badges
 
 Credibility is surfaced to the reader, not folded silently into rank.

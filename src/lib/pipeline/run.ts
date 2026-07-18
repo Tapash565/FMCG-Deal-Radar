@@ -20,6 +20,7 @@ import { clean } from './clean';
 import { clusterArticles, embedText } from './dedup';
 import { assessRelevance, type RelevanceResult } from './relevance';
 import { extractDeals } from './extract';
+import { mergeDuplicateDeals } from './merge';
 import { applyCredibility } from './credibility';
 import { rank } from './rank';
 import { draftNewsletter } from './newsletter';
@@ -136,9 +137,18 @@ export async function runPipeline(opts: RunPipelineOptions = {}): Promise<Pipeli
     extractDeals(relevant, verdicts),
   );
 
+  // 5b — merge duplicate deals on structured identity, catching same-deal pairs whose
+  // article text scored below the (deliberately conservative) cosine threshold. Runs
+  // BEFORE credibility so the unioned clusters give the merged deal its full source count.
+  const { deals: mergedDeals, clusters: mergedClusters, mergedCount } = mergeDuplicateDeals(
+    extracted,
+    clusters,
+  );
+  if (mergedCount > 0) log(`  merged ${mergedCount} duplicate deal(s) on identity`);
+
   // 6 — credibility (needs the full article set to count corroboration)
   const articlesById = new Map(urlDeduped.map((a) => [a.id, a]));
-  const deals = applyCredibility(extracted, clusters, articlesById);
+  const deals = applyCredibility(mergedDeals, mergedClusters, articlesById);
 
   // 7 — rank + group
   const { selected, grouped } = rank(deals, now);
@@ -162,7 +172,9 @@ export async function runPipeline(opts: RunPipelineOptions = {}): Promise<Pipeli
     funnel,
     deals: selected,
     newsletter,
-    clusters,
+    // Merged clusters, so the exported audit chain has one cluster per surviving deal
+    // with every corroborating outlet folded in — matching what credibility scored.
+    clusters: mergedClusters,
     articles: canonical,
   };
 

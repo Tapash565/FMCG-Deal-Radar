@@ -74,6 +74,51 @@ export function tierFor(source: string): SourceTier {
   return 3;
 }
 
+/**
+ * Publishers that categorically never report an FMCG DEAL, dropped at ingest.
+ *
+ * This is a blocklist, which the tiering deliberately is NOT (docs/decisions.md:
+ * unknown → T3, never blocked). No contradiction: tiering rates how much to TRUST a
+ * source that reported a deal; this drops sources whose entire output is a different
+ * kind of document. Two kinds, both measured polluting the funnel:
+ *
+ *   - Stock-data mills (MarketBeat): algorithmic 13F-holdings and analyst-rating posts
+ *     about US-listed FMCG names — "First Horizon Corp Purchases 31,583 Shares of
+ *     Colgate-Palmolive Company $CL". A quarterly share position is not a transaction.
+ *   - Wrong-sector trade press that trips one FMCG keyword: home-HEALTH-care and hospice
+ *     outlets match "home care"; horse-racing / betting outlets match "stake(s)".
+ *
+ * Names are matched after unification, case-insensitively. Kept tight on purpose — a
+ * source that sometimes carries real deals (Investing.com, TradingView) is NOT here;
+ * its 13F noise is caught by content instead (NON_DEAL_NOISE_PATTERN).
+ */
+const BLOCKED_SOURCES = new Set<string>([
+  'marketbeat',
+  // home-health / hospice / elder-care services press — not FMCG home care
+  'home health care news',
+  'mcknights home care',
+  'fierce healthcare',
+  'care home professional',
+  'caring times',
+  'hospice news',
+  'laingbuisson news',
+  // horse racing / sports betting — "stake(s)" false positives
+  'at the races',
+  'daily racing form',
+  'betfair',
+  'olbg',
+  'racing tv',
+  'read horse racing',
+  'thoroughbred daily news',
+  'william hill news',
+]);
+
+/** Is this publisher on the drop-at-ingest blocklist? Matches raw or unified name. */
+export function isBlockedSource(raw: string): boolean {
+  const key = raw.trim().toLowerCase().replace(/^www\./, '');
+  return BLOCKED_SOURCES.has(key) || BLOCKED_SOURCES.has(unifySourceName(raw).toLowerCase());
+}
+
 /** Direct RSS feeds — publishers we pull from without going through search. */
 export interface FeedSource {
   name: string;
@@ -131,6 +176,23 @@ export const FMCG_ENTITIES = [
   'Godrej Consumer',
   'Adani Wilmar',
   'Patanjali',
+  // Second tranche — listed majors and fast-moving D2C names that were producing deal
+  // news but weren't on the watchlist, so their deals only surfaced by luck via the
+  // category terms. Naming them makes that coverage deliberate.
+  'Varun Beverages',
+  'United Spirits',
+  'Radico Khaitan',
+  'Zydus Wellness',
+  'Jyothy Labs',
+  'Bajaj Consumer Care',
+  'Bikaji Foods',
+  'Gopal Snacks',
+  'Honasa Consumer',
+  'Mamaearth',
+  'Nykaa',
+  'Wipro Consumer Care',
+  'CavinKare',
+  'Reliance Consumer Products',
 ] as const;
 
 /** Category words — widen beyond the watchlist to catch unlisted targets. */
@@ -142,6 +204,16 @@ export const CATEGORY_TERMS = [
   'personal care',
   'home care',
   'D2C brand',
+  // The category grid is where off-watchlist targets actually get found (Innovist,
+  // Naturis, Anmasa were all D2C names nobody had listed), so widen it — kept specific
+  // ("skincare brand", not "skincare") to bias toward transaction copy over trend pieces.
+  'snacks brand',
+  'dairy brand',
+  'confectionery',
+  'skincare brand',
+  'haircare brand',
+  'ayurveda',
+  'nutraceutical',
 ] as const;
 
 /**
@@ -155,8 +227,11 @@ export function googleNewsFeed(query: string): string {
 
 /**
  * Verbs for the query grid, most productive first — the limit truncates the tail.
+ * 'raises'/'invests' pull the D2C funding rounds that make up most of the real yield;
+ * 'stake' drags in horse-racing and 13F noise, which BLOCKED_SOURCES and
+ * NON_DEAL_NOISE_PATTERN drop for free before any LLM call.
  */
-const QUERY_VERBS = ['acquires', 'stake', 'funding', 'merger'] as const;
+const QUERY_VERBS = ['acquires', 'funding', 'stake', 'raises', 'invests', 'merger'] as const;
 
 /**
  * Build the ingest query set: deal verbs × (watchlist + category terms).
@@ -173,10 +248,13 @@ const QUERY_VERBS = ['acquires', 'stake', 'funding', 'merger'] as const;
  * only deals by companies we already thought to name, which is the wrong shape for
  * discovery.
  *
- * Bounded deliberately — the 60s function budget caps fan-in.
+ * The default gives every term its two highest-yield verbs (acquires + funding), and
+ * SCALES with the term list so widening the grid can't silently leave the tail
+ * unqueried the way a hardcoded 32 did. This bound is the SEED's — /api/refresh passes
+ * its own tight queryLimit (8) for the 60s budget, so raising this can't slow a refresh.
  * See docs/architecture.md#runtime-and-timeout-strategy.
  */
-export function buildQueries(limit = 32): FeedSource[] {
+export function buildQueries(limit = (FMCG_ENTITIES.length + CATEGORY_TERMS.length) * 2): FeedSource[] {
   const terms = [...FMCG_ENTITIES, ...CATEGORY_TERMS];
 
   const queries: FeedSource[] = [];
@@ -230,6 +308,47 @@ export const FMCG_SIGNAL_PATTERN = new RegExp(
     'snack\\w*',
     'dairy',
     'confectioner\\w*',
+  ].join('|'),
+  'i',
+);
+
+/**
+ * The inverse of the pre-filter: content that marks an item as NOT a deal, however
+ * many deal-verbs and FMCG-signals it also contains. Rejected free in stage 4 before
+ * any LLM call — the "stake" verb + an FMCG name is exactly what a 13F holdings post or
+ * a horse-racing report looks like to the recall filter.
+ *
+ * Every pattern here is high-PRECISION: calibrated against 297 live articles, it flagged
+ * 32 — all genuine noise (MarketBeat 13F churn, home-health / hospice M&A, a promoter
+ * share-count blurb) — and hit NONE of the real-deal headlines, including the deliberately
+ * tricky "acquires stake in Badshah Masala" and "buy 100% stake in Yoga Bar maker". The
+ * asymmetry is deliberate: a pattern that could match a real deal does not belong here,
+ * because the LLM never gets a chance to overrule it. When unsure, leave it to the model.
+ *
+ * Note what is absent: bare "stake in" is a legitimate FMCG deal phrase, so the 13F
+ * signal is "stake lifted/boosted/... BY <fund>" and share-count verbs, never "stake in".
+ */
+export const NON_DEAL_NOISE_PATTERN = new RegExp(
+  [
+    // exchange listings and share counts — 13F holdings / analyst-rating churn
+    '\\((?:nyse|nasdaq|lon|otcmkts|tsx|amex|asx|cboe)\\s*:',
+    '\\b13f\\b',
+    '\\bshares of\\b',
+    '\\b(?:stock position|stock holdings|holdings in)\\b',
+    '(?:buys|sells|purchases|boosts|reduces|trims|lowers|cuts|lifts|raises|acquires|decreases|increases)\\s+[\\d,]+\\s+shares',
+    '\\bstake (?:lifted|boosted|cut|lowered|trimmed|reduced|raised|decreased|increased|sold)\\s+by\\b',
+    'has \\$[\\d.,]+\\s+(?:million|billion)\\s+(?:holdings|stock|stake|position)',
+    '\\bprice target\\b',
+    '\\bconsensus recommendation\\b',
+    '(?:moderate|strong)\\s+buy',
+    // home-HEALTH-care / hospice / elder-care — matches "home care" but isn't FMCG
+    '\\bhome health\\b',
+    '\\bhospice\\b',
+    '\\bassisted living\\b',
+    '\\bnursing home\\b',
+    'caregiv',
+    'in-home care',
+    '\\bhomecare\\b',
   ].join('|'),
   'i',
 );
